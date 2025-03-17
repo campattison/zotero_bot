@@ -1,0 +1,2 @@
+# This directory will store the FAISS index and document registry
+# It is intentionally kept empty in the repo 
