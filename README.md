@@ -1,121 +1,104 @@
 # Zotero PDF Chat
 
-Chat with your Zotero PDF library using OpenAI's models. This tool creates embeddings of your PDF documents and uses them for retrieval-augmented generation to provide accurate, contextual responses to your questions.
+A simple tool to chat with your Zotero PDF library using AI.
 
-## Features
+## What This Does
 
-- 📚 Seamless integration with your local Zotero library
-- 🔍 Automatic indexing of PDF documents
-- 💬 Natural language chat interface
-- 🧠 Retrieval-augmented generation for accurate responses
-- 📊 Citation of sources in responses
-- 🚀 Built with Gradio for a clean, responsive UI
+- Connects to your local Zotero library
+- Lets you ask questions about your PDFs
+- Gives answers based on the content of your documents
+- Provides citations from the source material
 
 ## Requirements
 
-- Python 3.8+
-- OpenAI API key
-- Local Zotero library with PDF files
+- Python 3.8 or higher
+- OpenAI API key (requires payment)
+- Local Zotero library with PDFs
 
-## Installation
+## Setup Guide
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/yourusername/zotero-pdf-chat.git
-   cd zotero-pdf-chat
-   ```
+### 1. Get the Code
 
-2. Install the required dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+git clone https://github.com/yourusername/zotero-pdf-chat.git
+cd zotero-pdf-chat
+```
 
-3. Create a `.env` file based on the example:
-   ```bash
-   cp .env.example .env
-   ```
+### 2. Install Required Software
 
-4. Edit the `.env` file and add your OpenAI API key and Zotero storage path:
-   ```
-   OPENAI_API_KEY=your_openai_api_key_here
-   ZOTERO_STORAGE_PATH=path_to_your_zotero_storage
-   ```
+```bash
+pip install -r requirements.txt
+```
 
-## Configuration
+### 3. Set Up Your Configuration
 
-You can customize various settings in `config.py`:
+Create a configuration file:
+```bash
+cp .env.example .env
+```
 
-- `EMBEDDING_MODEL`: The OpenAI embedding model to use (default: "text-embedding-3-large")
-- `CHAT_MODEL`: The OpenAI model for chat (default: "gpt-4o")
-- `CHUNK_SIZE`: Size of text chunks for embeddings (default: 1000)
-- `CHUNK_OVERLAP`: Overlap between chunks (default: 200)
-- `THEME`: Gradio theme (default: "default")
+Edit the `.env` file with your information:
+```
+OPENAI_API_KEY=your_openai_api_key_here
+ZOTERO_STORAGE_PATH=/path/to/your/zotero/storage
+```
 
-## Usage
+**Finding your Zotero storage path:**
+- Open Zotero
+- Go to Edit → Preferences → Advanced → Files and Folders
+- Look for "Data Directory Location"
+- The storage folder is inside this directory at `/storage`
 
-1. Start the application:
-   ```bash
-   python app.py
-   ```
-   Sometimes users have to use: 
-   ```bash
-   python3 app.py
-   ```
+### 4. Start the Program
 
-2. Open your browser and navigate to the listed localhost (e.g. http://localhost:7860)
+```bash
+python app.py
+```
+If that doesn't work, try:
+```bash
+python3 app.py
+```
 
-3. The first time you run the app, you will have to index your PDFs in the index page. This may take some time depending on the size of your library.
+The program will be available at http://localhost:7860 in your web browser.
 
-4. Once indexing is complete, you can start chatting with your documents!
+## Using the Program
 
-## How It Works
+### First Run: Index Your PDFs
 
-1. **PDF Processing**: The tool extracts text from your Zotero PDFs using PyPDF.
-2. **Text Chunking**: The extracted text is split into manageable chunks with appropriate overlap.
-3. **Embedding Generation**: Each chunk is embedded using OpenAI's embedding model.
-4. **Vector Database**: Embeddings are stored in a FAISS vector database for efficient similarity search.
-5. **Query Processing**: When you ask a question, it's embedded and used to retrieve relevant document chunks.
-6. **Response Generation**: The OpenAI chat model generates a response based on the retrieved context.
+1. When you first start the app, go to the "Index PDFs" tab
+2. Click "Start Indexing" (this may take time for large libraries)
+3. Wait for indexing to complete
 
-## Project Structure
+### Asking Questions
 
-- `app.py`: Main Gradio application and UI
-- `zotero_handler.py`: Integration with Zotero library
-- `pdf_processor.py`: PDF text extraction and preprocessing
-- `embedder.py`: Document embedding and vector database management
-- `retriever.py`: Semantic search functionality
-- `chat.py`: Chat interface and response generation
-- `config.py`: Configuration settings
+1. Go to the "Chat" tab
+2. Type your question about your PDFs
+3. The system will search your documents and provide an answer
 
-## Privacy and Security
+## Example Questions
 
-This application processes your personal documents locally and makes API calls to OpenAI for embeddings and chat completions:
+- "What does [author] say about [topic]?"
+- "Summarize the main findings in my papers about [topic]"
+- "Compare different views on [topic] across my papers"
+- "What methods are used to study [topic] in my library?"
 
-- Your PDF files never leave your local machine
-- Only the text extracted from PDFs is sent to OpenAI's API
-- The application stores processed document data in the `vector_db` directory
-- API keys and personal paths are stored in the `.env` file (never commit this file to public repositories)
+## Common Issues
 
-### Data Storage
+- **Slow indexing:** Normal for large libraries - each PDF needs processing
+- **API Key errors:** Check that your OpenAI API key is valid and has available credit
+- **PDFs not found:** Verify your Zotero storage path is correct in the .env file
 
-- All processed data is stored locally in the `vector_db` directory
-- This directory is excluded from git via `.gitignore`
-- Your OpenAI API key is stored in the `.env` file, which is also excluded from git
+## Cost Information
 
-### Setting Up Securely
+This tool uses OpenAI's API which charges based on usage:
+- Creating embeddings uses the text-embedding-3-large model
+- Chat responses use the o3-mini model by default
 
-Please follow our [Environment Setup Guide](ENV_SETUP.md) to configure your environment securely and prevent accidental exposure of sensitive information.
+Monitor your OpenAI dashboard to track costs.
 
-## Limitations
+## How It Works (Simple Version)
 
-- Currently only supports local Zotero libraries, not Zotero web
-- Requires an OpenAI API key (usage will incur costs)
-- Processing large libraries may take significant time and API calls
-
-## Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 
+1. The program extracts text from your PDFs
+2. It creates AI-readable versions (embeddings) of your documents
+3. When you ask a question, it finds the most relevant parts of your PDFs
+4. It uses AI to create an answer based on those relevant sections 
