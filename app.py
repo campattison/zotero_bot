@@ -374,6 +374,61 @@ def get_indexing_metrics():
     
     return progress_desc
 
+# New function for simplified metrics display
+def get_simple_metrics_display():
+    """Generate a simplified, easy-to-read metrics display."""
+    metrics = embedder.get_embedding_progress()
+    
+    # Get elapsed time
+    if indexing_status.get("start_time"):
+        elapsed = time.time() - indexing_status["start_time"]
+        elapsed_min, elapsed_sec = divmod(int(elapsed), 60)
+        elapsed_str = f"{elapsed_min:02d}:{elapsed_sec:02d}"
+    else:
+        elapsed_str = "00:00"
+    
+    # Calculate progress percentage
+    if metrics.get("total_chunks", 0) > 0:
+        progress_pct = (metrics.get("processed_chunks", 0) / metrics.get("total_chunks", 1)) * 100
+    else:
+        progress_pct = 0
+    
+    # Calculate time remaining
+    if metrics.get("estimated_seconds_remaining"):
+        remaining_min, remaining_sec = divmod(int(metrics.get("estimated_seconds_remaining", 0)), 60)
+        remaining_str = f"{remaining_min:02d}:{remaining_sec:02d}"
+    else:
+        remaining_str = "--:--"
+    
+    # Create progress bar
+    bar_width = 20
+    filled = int(bar_width * progress_pct / 100)
+    progress_bar = "█" * filled + "░" * (bar_width - filled)
+    
+    # Format the display
+    status = "IN PROGRESS" if indexing_status.get("running", False) else "COMPLETE"
+    
+    display = f"""
+## Embedding Progress: {status}
+
+[{progress_bar}] {progress_pct:.1f}%
+
+### Time
+⏱️ Elapsed: {elapsed_str}
+⏳ Remaining: {remaining_str}
+
+### Cost
+💰 Current: ${metrics.get('estimated_cost', 0):.4f}
+📈 Estimated Total: ${(metrics.get('estimated_cost', 0) / max(progress_pct, 1) * 100) if progress_pct > 0 else 0:.4f}
+
+### Progress
+📁 Files: {indexing_status.get('processed', 0)}/{indexing_status.get('total', 0)}
+📄 Chunks: {metrics.get('processed_chunks', 0)}/{metrics.get('total_chunks', 0)}
+🔄 API Calls: {metrics.get('api_calls', 0)}
+    """
+    
+    return display
+
 def stop_app_servers():
     """Force stop any running Gradio servers on ports 7860 and 7861."""
     try:
@@ -598,12 +653,12 @@ def create_ui():
                     outputs=[metrics_output]
                 )
                 
-                # Add auto-refresh for metrics
+                # Update to use simple metrics display with frequent updates
                 gr.on(
                     triggers=[index_button.click, stop_button.click],
-                    fn=get_indexing_metrics,
+                    fn=get_simple_metrics_display,  # Use the new simple display function
                     outputs=[metrics_output],
-                    every=1
+                    every=1  # Update every second
                 )
     
     return demo
