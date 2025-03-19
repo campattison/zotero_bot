@@ -418,4 +418,14 @@ class Embedder:
         Args:
             file_path (str): Path to the document
         """
-        self.document_registry[file_path] = os.path.getmtime(file_path) 
+        self.document_registry[file_path] = os.path.getmtime(file_path)
+    
+    def get_processed_document_count(self) -> int:
+        """
+        Get the number of documents that have been processed.
+        
+        Returns:
+            int: Count of processed documents
+        """
+        # Simply return the count of documents in the registry
+        return len(self.document_registry) 

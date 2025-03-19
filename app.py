@@ -523,6 +523,103 @@ def debug_selected_collection(folder_choice: str):
     
     return "\n".join(result)
 
+def estimate_collection_processing(folder_choice: str):
+    """Estimate the time and cost to process an entire collection."""
+    # Convert folder choice to collection ID
+    collection_id = folder_choice_to_collection_id(folder_choice)
+    
+    # Get PDFs from selected collection or all PDFs
+    if collection_id is not None:
+        pdf_files = zotero.get_pdfs_in_collection(collection_id)
+        collection_name = next((c["full_name"] for c in zotero.get_collections() if c["id"] == collection_id), "Unknown")
+        logger.info(f"Estimating for {len(pdf_files)} PDF files in collection: {collection_name}")
+    else:
+        pdf_files = zotero.get_all_pdfs()
+        logger.info(f"Estimating for {len(pdf_files)} PDF files in all Zotero storage")
+    
+    # Limit number of documents in test mode
+    if TEST_MODE:
+        total_available = len(pdf_files)
+        pdf_files = pdf_files[:TEST_DOC_LIMIT]
+        logger.info(f"TEST MODE: Limiting estimate to {len(pdf_files)} documents out of {total_available}")
+    
+    # Count documents that need processing vs. already processed
+    to_process = []
+    already_processed = []
+    
+    for pdf_file in pdf_files:
+        if embedder.needs_processing(pdf_file):
+            to_process.append(pdf_file)
+        else:
+            already_processed.append(pdf_file)
+    
+    # Get historical metrics if available
+    avg_chunks_per_doc = 0
+    avg_time_per_chunk = 0
+    avg_cost_per_chunk = 0
+    
+    # Check if we have previous metrics to use
+    processed_docs = embedder.get_processed_document_count()
+    total_chunks = len(embedder.documents)
+    
+    if processed_docs > 0 and total_chunks > 0:
+        # Use historical data for estimates
+        avg_chunks_per_doc = total_chunks / processed_docs
+        
+        # Assume approximately 3 seconds per chunk on average as a baseline
+        # (This can be adjusted based on system performance)
+        avg_time_per_chunk = 3
+        
+        # Average cost based on approximately 1000 tokens per chunk at $0.0001 per 1K tokens
+        avg_cost_per_chunk = 0.0001
+    else:
+        # No historical data, use conservative defaults
+        avg_chunks_per_doc = 20  # Guess: average academic PDF might have ~20 chunks
+        avg_time_per_chunk = 4   # Be conservative and assume 4 seconds per chunk
+        avg_cost_per_chunk = 0.00015  # Be conservative on cost too
+    
+    # Calculate estimates
+    est_chunks = len(to_process) * avg_chunks_per_doc
+    est_total_time_seconds = est_chunks * avg_time_per_chunk
+    est_total_cost = est_chunks * avg_cost_per_chunk
+    
+    # Format time estimate
+    hours, remainder = divmod(est_total_time_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    time_estimate = f"{int(hours)}h {int(minutes)}m {int(seconds)}s"
+    if hours == 0:
+        time_estimate = f"{int(minutes)}m {int(seconds)}s"
+    
+    # Create estimate display
+    if len(to_process) == 0:
+        result = f"""
+## Collection Estimate
+
+✅ **All {len(pdf_files)} documents in this collection are already processed!**
+
+No further processing needed. You can chat with these documents immediately.
+        """
+    else:
+        result = f"""
+## Collection Estimate
+
+📚 **Collection Overview:**
+- Total PDFs: {len(pdf_files)}
+- Already processed: {len(already_processed)}
+- Need processing: {len(to_process)}
+
+⏱️ **Estimated Processing Time:**
+- Approximately {time_estimate}
+
+💰 **Estimated Cost:**
+- Approximately ${est_total_cost:.2f}
+
+These estimates are based on {processed_docs} previously processed documents.
+Actual time and cost may vary based on document length and content.
+        """
+    
+    return result
+
 def create_ui():
     """Create the Gradio UI."""
     with gr.Blocks(theme=THEME) as demo:
@@ -611,13 +708,21 @@ def create_ui():
                         )
                         refresh_folders = gr.Button("Refresh Folder List")
                         
+                        # Add estimate button
+                        estimate_button = gr.Button("Estimate Processing")
+                        
                         with gr.Row():
                             index_button = gr.Button("Start Indexing")
-                            stop_button = gr.Button("Stop Indexing")
                             debug_button = gr.Button("Debug Selected Collection")
                             
                         with gr.Row():
                             clear_ports_button = gr.Button("Fix Port Issues")
+                        
+                        # Add note about stopping indexing
+                        gr.Markdown("""
+                        > **Note:** To stop indexing, press `Ctrl+C` in the terminal/command prompt where you started the app. 
+                        > On Mac, you can also use `Command+C` or `Control+C`.
+                        """)
                             
                         metrics_output = gr.Markdown("No metrics available.")
                 
@@ -627,15 +732,17 @@ def create_ui():
                     outputs=[folder_choice]
                 )
                 
-                # Update indexing functionality
-                index_button.click(
-                    start_indexing,
+                # Add estimate functionality
+                estimate_button.click(
+                    estimate_collection_processing,
                     inputs=[folder_choice],
                     outputs=[metrics_output]
                 )
                 
-                stop_button.click(
-                    lambda: setattr(indexing_status, "running", False),
+                # Update indexing functionality
+                index_button.click(
+                    start_indexing,
+                    inputs=[folder_choice],
                     outputs=[metrics_output]
                 )
                 
@@ -655,8 +762,8 @@ def create_ui():
                 
                 # Update to use simple metrics display with frequent updates
                 gr.on(
-                    triggers=[index_button.click, stop_button.click],
-                    fn=get_simple_metrics_display,  # Use the new simple display function
+                    triggers=[index_button.click],
+                    fn=get_simple_metrics_display,
                     outputs=[metrics_output],
                     every=1  # Update every second
                 )
