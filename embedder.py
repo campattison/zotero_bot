@@ -347,7 +347,9 @@ class Embedder:
             "processed_chunks": 0,
             "start_time": None,
             "estimated_cost": 0.0,
-            "rate_limit_delays": 0
+            "rate_limit_delays": 0,
+            "last_checkpoint": None,
+            "checkpoint_interval": 300
         }
         logger.info("Embedding metrics reset")
     

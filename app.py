@@ -3,7 +3,10 @@ import logging
 import gradio as gr
 import threading
 import time
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
+import glob
+import signal
+import subprocess
 
 from config import APP_TITLE, APP_DESCRIPTION, THEME
 from zotero_handler import ZoteroHandler
@@ -28,7 +31,7 @@ chat_handler = ChatHandler(retriever)
 
 # Global variables
 indexing_status = {"running": False, "processed": 0, "total": 0, "current_file": ""}
-TEST_MODE = True  # Set to False to process all documents
+TEST_MODE = False  # Set to False to process all documents
 TEST_DOC_LIMIT = 20
 
 # UI settings
@@ -38,7 +41,7 @@ APP_DESCRIPTION = "Chat with your Zotero PDF library using OpenAI's models"
 if TEST_MODE:
     APP_DESCRIPTION += f" (TEST MODE - Limited to {TEST_DOC_LIMIT} documents)"
 
-def index_pdfs_thread(progress=gr.Progress()):
+def index_pdfs_thread(collection_id: Optional[int] = None, progress=gr.Progress()):
     """Function to run in a thread to index PDFs."""
     global indexing_status
     
@@ -46,9 +49,14 @@ def index_pdfs_thread(progress=gr.Progress()):
         # Reset embedding metrics
         embedder.reset_metrics()
         
-        # Get all PDFs
-        pdf_files = zotero.get_all_pdfs()
-        logger.info(f"Found {len(pdf_files)} PDF files in Zotero storage")
+        # Get PDFs from selected collection or all PDFs
+        if collection_id is not None:
+            pdf_files = zotero.get_pdfs_in_collection(collection_id)
+            collection_name = next((c["full_name"] for c in zotero.get_collections() if c["id"] == collection_id), "Unknown")
+            logger.info(f"Found {len(pdf_files)} PDF files in collection: {collection_name}")
+        else:
+            pdf_files = zotero.get_all_pdfs()
+            logger.info(f"Found {len(pdf_files)} PDF files in all Zotero storage")
         
         # Limit number of documents in test mode
         if TEST_MODE:
@@ -118,29 +126,111 @@ def index_pdfs_thread(progress=gr.Progress()):
                 f"Time Remaining: {time_remaining}"
             )
             progress(indexing_status["processed"] / indexing_status["total"], desc=progress_desc)
-            
+        
+        # Ensure everything is saved
+        embedder._save()
+        
         indexing_status["running"] = False
+        logger.info(f"Indexing completed: {indexing_status['processed']} documents processed")
         
-        # Get final metrics
-        final_metrics = embedder.get_embedding_progress()
-        elapsed = time.time() - indexing_status["start_time"]
-        minutes, seconds = divmod(elapsed, 60)
-        
-        return (
-            f"✅ Indexing complete! Processed {indexing_status['processed']} of {indexing_status['total']} PDFs.\n\n"
-            f"📊 Metrics:\n"
-            f"- Total chunks: {final_metrics['processed_chunks']}\n"
-            f"- Total API calls: {final_metrics['api_calls']}\n"
-            f"- Estimated cost: ${final_metrics['estimated_cost']:.4f}\n"
-            f"- Processing time: {int(minutes)}m {int(seconds)}s\n"
-            f"- Processing rate: {final_metrics['chunks_per_second']:.2f} chunks/second"
-        )
+        # Return metrics for display
+        return get_indexing_metrics()
         
     except Exception as e:
+        logger.error(f"Error in indexing thread: {e}")
         indexing_status["running"] = False
-        error_msg = f"❌ Error during indexing: {str(e)}"
-        logger.error(error_msg)
-        return error_msg
+        return f"Error: {str(e)}"
+
+def get_folder_choices():
+    """Get collection choices for the dropdown menu."""
+    # Add "All Collections" option
+    choices = ["All Collections"]
+    
+    # Get collections from Zotero
+    logger.info("Getting collections from Zotero for dropdown")
+    collections = zotero.get_collections()
+    logger.info(f"Found {len(collections)} collections in Zotero database for dropdown")
+    
+    # Track collection names to handle duplicates
+    collection_names = {}
+    
+    for collection in collections:
+        full_path = collection["full_name"]
+        pdf_count = collection["pdf_count"]
+        
+        if pdf_count > 0:
+            # Check if this is a duplicate name
+            if full_path in collection_names:
+                # Already have this name, so we need to disambiguate
+                logger.warning(f"Duplicate collection name found: {full_path}")
+            else:
+                # Add to tracking and choices
+                collection_names[full_path] = pdf_count
+                choices.append(f"{full_path} ({pdf_count} PDFs)")
+    
+    logger.info(f"Final dropdown choices: {len(choices)} items")
+    return choices
+
+def folder_choice_to_collection_id(choice: str) -> Optional[int]:
+    """Convert a collection choice from the dropdown to a collection ID."""
+    if choice == "All Collections":
+        return None
+        
+    # Extract collection name and PDF count from the choice
+    # Format is typically "Collection Name (X PDFs)"
+    parts = choice.split(" (")
+    if len(parts) < 2:
+        logger.error(f"Invalid choice format: {choice}")
+        return None
+        
+    collection_name = parts[0]
+    pdf_count_str = parts[1].rstrip(" PDFs)")
+    try:
+        pdf_count = int(pdf_count_str)
+    except ValueError:
+        logger.error(f"Invalid PDF count in choice: {choice}")
+        return None
+    
+    # Find the matching collection by name AND pdf count to handle duplicates
+    collections = zotero.get_collections()
+    matching_collections = []
+    
+    for collection in collections:
+        if collection["full_name"] == collection_name and collection["pdf_count"] == pdf_count:
+            matching_collections.append(collection)
+    
+    if len(matching_collections) == 1:
+        # Single exact match found
+        return matching_collections[0]["id"]
+    elif len(matching_collections) > 1:
+        # Multiple matches with same name and PDF count
+        # Log the ambiguity but return the first match
+        logger.warning(f"Multiple collections match '{collection_name}' with {pdf_count} PDFs. Using the first match.")
+        return matching_collections[0]["id"]
+    else:
+        # Try a more lenient match - just by the end of the path
+        for collection in collections:
+            # Check if the collection name ends with our search term and has the right PDF count
+            if collection["full_name"].endswith(collection_name) and collection["pdf_count"] == pdf_count:
+                logger.info(f"Found collection {collection['full_name']} matching end path '{collection_name}' with {pdf_count} PDFs")
+                return collection["id"]
+    
+    logger.error(f"No collection found matching '{collection_name}' with {pdf_count} PDFs")
+    return None
+
+def start_indexing(folder_choice: str, progress=gr.Progress()):
+    """Start the indexing process in a thread."""
+    if indexing_status["running"]:
+        return "Indexing is already in progress. Please wait for it to complete or stop it."
+    
+    # Convert folder choice to collection ID
+    collection_id = folder_choice_to_collection_id(folder_choice)
+    
+    # Start indexing in a thread
+    threading.Thread(target=index_pdfs_thread, args=(collection_id, progress)).start()
+    
+    # Return initial status
+    return "Indexing started. Please wait..."
 
 def index_pdfs_wrapper(progress=gr.Progress()):
     """Wrapper to start the indexing thread."""
@@ -229,112 +319,298 @@ def check_setup():
     else:
         return "✅ Setup looks good! You can now index your PDFs and start chatting."
 
-# Add function to format embedding metrics for display
-def format_embedding_metrics() -> str:
+def format_embedding_metrics():
     """Format embedding metrics for display."""
-    if len(embedder.documents) == 0:
-        return "No documents indexed yet."
-        
-    metrics = embedder.get_embedding_progress()
+    # Get final metrics
+    final_metrics = embedder.get_embedding_progress()
     
-    # If we have active indexing
-    if indexing_status["running"]:
-        elapsed = time.time() - metrics.get("start_time", time.time())
+    # Check if we have a start time
+    if indexing_status.get("start_time"):
+        elapsed = time.time() - indexing_status["start_time"]
         minutes, seconds = divmod(elapsed, 60)
-        
-        time_remaining = "calculating..."
-        if metrics.get("estimated_seconds_remaining"):
-            rem_minutes, rem_seconds = divmod(metrics["estimated_seconds_remaining"], 60)
-            time_remaining = f"{int(rem_minutes)}m {int(rem_seconds)}s"
-            
-        return (
-            f"📊 Live Embedding Metrics:\n\n"
-            f"📂 Files: {indexing_status['processed']}/{indexing_status['total']}\n"
-            f"📄 Chunks: {metrics['processed_chunks']}/{metrics['total_chunks']} ({metrics.get('percent_complete', 0):.1f}%)\n"
-            f"🔄 Processing rate: {metrics.get('chunks_per_second', 0):.2f} chunks/second\n"
-            f"⏱️ Elapsed time: {int(minutes)}m {int(seconds)}s\n"
-            f"⏳ Estimated time remaining: {time_remaining}\n"
-            f"🔌 API calls: {metrics['api_calls']}\n"
-            f"💰 Estimated cost: ${metrics['estimated_cost']:.4f}"
-        )
+        time_str = f"{int(minutes)}m {int(seconds)}s"
+    else:
+        time_str = "N/A"
     
-    # If we have indexed documents but not currently indexing
-    if len(embedder.documents) > 0:
-        return (
-            f"📊 Embedding Database Stats:\n\n"
-            f"📄 Total chunks indexed: {len(embedder.documents)}\n"
-            f"📂 Files in registry: {len(embedder.document_registry)}\n"
-            f"💾 Vector database size: {len(embedder.documents) * (3072 if '3' in embedder.model else 1536) * 4 / (1024*1024):.2f} MB"
-        )
+    if indexing_status.get("running"):
+        status = "✅ Indexing in progress..."
+    else:
+        status = "✅ Indexing complete!"
     
-    return "No metrics available."
+    chunks_per_second = final_metrics.get("chunks_per_second", 0)
+    
+    return (
+        f"{status}\n\n"
+        f"📊 Metrics:\n"
+        f"- Processed {indexing_status.get('processed', 0)} of {indexing_status.get('total', 0)} PDFs\n"
+        f"- Total chunks: {final_metrics.get('processed_chunks', 0)}\n"
+        f"- Total API calls: {final_metrics.get('api_calls', 0)}\n"
+        f"- Estimated cost: ${final_metrics.get('estimated_cost', 0):.4f}\n"
+        f"- Processing time: {time_str}\n"
+        f"- Processing rate: {chunks_per_second:.2f} chunks/second"
+    )
 
-def create_ui(chat_handler):
-    """Create the Gradio interface."""
-    with gr.Blocks() as demo:
-        chatbot = gr.Chatbot(height=500)
+def get_indexing_metrics():
+    """Get the current indexing metrics for display."""
+    if not indexing_status.get("running", False):
+        return format_embedding_metrics()
+    
+    # Calculate time remaining
+    metrics = embedder.get_embedding_progress()
+    time_remaining = "calculating..."
+    if metrics.get("estimated_seconds_remaining"):
+        minutes, seconds = divmod(metrics["estimated_seconds_remaining"], 60)
+        time_remaining = f"{int(minutes)}m {int(seconds)}s"
+    
+    # Format progress message
+    progress_desc = (
+        f"Processing {indexing_status.get('current_file', 'files')} | "
+        f"Files: {indexing_status.get('processed', 0)}/{indexing_status.get('total', 0)} | "
+        f"Chunks: {metrics.get('processed_chunks', 0)}/{metrics.get('total_chunks', 0)} | "
+        f"API Calls: {metrics.get('api_calls', 0)} | "
+        f"Est. Cost: ${metrics.get('estimated_cost', 0):.4f} | "
+        f"Time Remaining: {time_remaining}"
+    )
+    
+    return progress_desc
+
+def stop_app_servers():
+    """Force stop any running Gradio servers on ports 7860 and 7861."""
+    try:
+        # Find processes using ports 7860 and 7861
+        cmd = "lsof -t -i:7860,7861"
+        output = subprocess.check_output(cmd, shell=True).decode().strip()
         
-        with gr.Row():
-            msg = gr.Textbox(
-                label="Chat Message",
-                placeholder="Type your message here...",
-                lines=3
-            )
+        if output:
+            pids = output.split('\n')
+            logger.info(f"Found {len(pids)} processes using app ports: {', '.join(pids)}")
             
-        with gr.Row():
-            submit = gr.Button("Submit")
-            clear = gr.Button("Clear")
+            # Kill each process
+            for pid in pids:
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                    logger.info(f"Killed process {pid}")
+                except Exception as e:
+                    logger.error(f"Failed to kill process {pid}: {e}")
+        else:
+            logger.info("No processes found using app ports")
+            
+        return "App server ports cleared"
+    except subprocess.CalledProcessError:
+        logger.info("No processes found using app ports")
+        return "No processes to clean up"
+    except Exception as e:
+        logger.error(f"Error stopping app servers: {e}")
+        return f"Error: {str(e)}"
+
+def debug_selected_collection(folder_choice: str):
+    """Debug the selected collection to help diagnose issues."""
+    if not folder_choice or folder_choice == "All Collections":
+        return "Please select a specific collection to debug"
+    
+    # Convert folder choice to collection ID
+    collection_id = folder_choice_to_collection_id(folder_choice)
+    if not collection_id:
+        return f"Error: Could not find collection ID for {folder_choice}"
+    
+    # Get details about this collection
+    collections = zotero.get_collections()
+    collection_info = next((c for c in collections if c["id"] == collection_id), None)
+    
+    if not collection_info:
+        return f"Error: Could not find collection information for ID {collection_id}"
+    
+    # Run debug function on the collection
+    zotero.debug_collection_pdfs(collection_id)
+    
+    # Get PDFs that would be indexed
+    pdf_files = zotero.get_pdfs_in_collection(collection_id)
+    
+    # Format debug information
+    result = [
+        f"## Debug Information for Collection",
+        f"Collection: {collection_info['full_name']}",
+        f"Collection ID: {collection_id}",
+        f"Expected PDF Count: {collection_info['pdf_count']}",
+        f"Actual PDFs Found: {len(pdf_files)}",
+        f"Zotero Database: {zotero.sqlite_path}",
+        f"Zotero Storage Path: {zotero.storage_path}",
+        "",
+        "### First 5 PDF files found (if any):"
+    ]
+    
+    for i, pdf in enumerate(pdf_files[:5]):
+        result.append(f"{i+1}. {pdf}")
         
-        def handle_chat(message, history):
-            """Handle chat messages."""
-            updated_history, _ = chat_handler.chat(message, history)
-            return "", updated_history  # Return empty string to clear input
+    if len(pdf_files) > 5:
+        result.append(f"...and {len(pdf_files) - 5} more")
+    
+    if len(pdf_files) == 0:
+        result.append("No PDF files found in this collection!")
+        result.append("")
+        result.append("Possible reasons:")
+        result.append("1. The PDFs aren't properly linked to items in this collection")
+        result.append("2. The PDFs don't exist at the expected storage locations")
+        result.append("3. There might be a mismatch between collection hierarchies")
+        result.append("")
+        result.append("Try searching for PDFs directly:")
         
-        # Set up event handlers
-        submit.click(
-            handle_chat,
-            inputs=[msg, chatbot],
-            outputs=[msg, chatbot],  # Now also returning to msg to clear it
-        )
+        # Try searching for PDFs in storage
+        storage_pattern = os.path.join(zotero.data_directory, "storage", "**", "*.pdf")
+        storage_pdfs = glob.glob(storage_pattern, recursive=True)
+        result.append(f"Found {len(storage_pdfs)} PDFs anywhere in the Zotero storage directory")
+        if storage_pdfs:
+            result.append("Sample paths:")
+            for i, pdf in enumerate(storage_pdfs[:3]):
+                result.append(f"- {pdf}")
+            if len(storage_pdfs) > 3:
+                result.append(f"...and {len(storage_pdfs) - 3} more")
+    
+    return "\n".join(result)
+
+def create_ui():
+    """Create the Gradio UI."""
+    with gr.Blocks(theme=THEME) as demo:
+        gr.Markdown(f"# {APP_TITLE}\n\n{APP_DESCRIPTION}")
         
-        clear.click(lambda: None, None, chatbot, queue=False)
-        
-        msg.submit(
-            handle_chat,
-            inputs=[msg, chatbot],
-            outputs=[msg, chatbot],  # Now also returning to msg to clear it
-        )
+        with gr.Tabs():
+            # Chat Tab
+            with gr.Tab("Chat"):
+                with gr.Row():
+                    with gr.Column(scale=4):
+                        chat_history = gr.Chatbot(
+                            [],
+                            elem_id="chatbot",
+                            bubble_full_width=False,
+                            avatar_images=None,  # Use text avatars instead of images
+                            height=600,
+                            show_label=False,
+                        )
+                        with gr.Row():
+                            with gr.Column(scale=8):
+                                query = gr.Textbox(
+                                    show_label=False,
+                                    placeholder="Ask a question about your PDFs...",
+                                    container=False
+                                )
+                            with gr.Column(scale=1):
+                                with gr.Row():
+                                    submit = gr.Button("Send", variant="primary")
+                                    reset_chat = gr.Button("New Chat")
+                
+                # Define a function to handle message submission that immediately shows the user's message
+                def user_message_handler(message, history):
+                    # Add user message to history immediately
+                    history = history + [(message, None)]
+                    return history, ""
+                
+                # Define a function to process the bot's response
+                def bot_response_handler(history):
+                    if history and history[-1][1] is None:
+                        user_message = history[-1][0]
+                        # Process the actual response using chat_handler
+                        updated_history, _ = chat_handler.chat(user_message, history[:-1])
+                        # Replace the last history item with the complete one
+                        history = history[:-1] + [(user_message, updated_history[-1][1])]
+                    return history
+                
+                # Connect the UI elements to the functions
+                submit.click(
+                    fn=user_message_handler,
+                    inputs=[query, chat_history],
+                    outputs=[chat_history, query],
+                ).then(
+                    fn=bot_response_handler,
+                    inputs=[chat_history],
+                    outputs=[chat_history]
+                )
+                
+                query.submit(
+                    fn=user_message_handler,
+                    inputs=[query, chat_history],
+                    outputs=[chat_history, query],
+                ).then(
+                    fn=bot_response_handler,
+                    inputs=[chat_history],
+                    outputs=[chat_history]
+                )
+                
+                def reset_chat_ui():
+                    """Reset the chat UI and backend chat state."""
+                    chat_handler.reset_chat()
+                    return [], ""
+                
+                reset_chat.click(
+                    reset_chat_ui,
+                    inputs=[],
+                    outputs=[chat_history, query]
+                )
+            
+            # Index PDFs Tab
+            with gr.Tab("Index PDFs"):
+                with gr.Row():
+                    with gr.Column():
+                        folder_choice = gr.Dropdown(
+                            label="Select Folder",
+                            choices=get_folder_choices()
+                        )
+                        refresh_folders = gr.Button("Refresh Folder List")
+                        
+                        with gr.Row():
+                            index_button = gr.Button("Start Indexing")
+                            stop_button = gr.Button("Stop Indexing")
+                            debug_button = gr.Button("Debug Selected Collection")
+                            
+                        with gr.Row():
+                            clear_ports_button = gr.Button("Fix Port Issues")
+                            
+                        metrics_output = gr.Markdown("No metrics available.")
+                
+                # Add refresh functionality
+                refresh_folders.click(
+                    lambda: gr.Dropdown(choices=get_folder_choices()),
+                    outputs=[folder_choice]
+                )
+                
+                # Update indexing functionality
+                index_button.click(
+                    start_indexing,
+                    inputs=[folder_choice],
+                    outputs=[metrics_output]
+                )
+                
+                stop_button.click(
+                    lambda: setattr(indexing_status, "running", False),
+                    outputs=[metrics_output]
+                )
+                
+                # Add debug functionality
+                debug_button.click(
+                    debug_selected_collection,
+                    inputs=[folder_choice],
+                    outputs=[metrics_output]
+                )
+                
+                # Add port fix functionality
+                clear_ports_button.click(
+                    stop_app_servers,
+                    inputs=[],
+                    outputs=[metrics_output]
+                )
+                
+                # Add auto-refresh for metrics
+                gr.on(
+                    triggers=[index_button.click, stop_button.click],
+                    fn=get_indexing_metrics,
+                    outputs=[metrics_output],
+                    every=1
+                )
     
     return demo
 
-# Create Gradio interface
-with gr.Blocks(title=APP_TITLE, theme=THEME) as app:
-    gr.Markdown(f"# {APP_TITLE}")
-    
-    with gr.Tab("Chat"):
-        chat_handler = ChatHandler(retriever)
-        chat_interface = create_ui(chat_handler)
-    
-    with gr.Tab("Index PDFs"):
-        # PDF indexing interface
-        with gr.Row():
-            with gr.Column():
-                index_button = gr.Button("Start Indexing")
-                stop_button = gr.Button("Stop Indexing")
-                metrics_output = gr.Markdown("No metrics available.")
-                
-        index_button.click(
-            index_pdfs_wrapper,
-            outputs=[metrics_output]
-        )
-        
-        stop_button.click(
-            stop_indexing,
-            outputs=[metrics_output]
-        )
-
 def main():
     # Launch the app
+    app = create_ui()
     app.queue()
     app.launch(server_name="0.0.0.0")
 

@@ -57,10 +57,14 @@ You can customize various settings in `config.py`:
    ```bash
    python app.py
    ```
+   Sometimes users have to use: 
+   ```bash
+   python3 app.py
+   ```
 
-2. Open your browser and navigate to http://localhost:7860
+2. Open your browser and navigate to the listed localhost (e.g. http://localhost:7860)
 
-3. The first time you run the app, it will index your PDFs. This may take some time depending on the size of your library.
+3. The first time you run the app, you will have to index your PDFs in the index page. This may take some time depending on the size of your library.
 
 4. Once indexing is complete, you can start chatting with your documents!
 

@@ -7,7 +7,8 @@ load_dotenv()
 # OpenAI API settings
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 EMBEDDING_MODEL = "text-embedding-3-large"
-CHAT_MODEL = "gpt-4o"  # or "gpt-4o-mini" if preferred
+CHAT_MODEL = "o3-mini"  # Using o3-mini for enhanced reasoning capabilities
+REASONING_EFFORT = "high"  # Can be "low", "medium", or "high"
 
 # Zotero settings
 ZOTERO_STORAGE_PATH = os.getenv("ZOTERO_STORAGE_PATH", "")
@@ -22,4 +23,4 @@ CHUNK_OVERLAP = 200
 # UI settings
 THEME = "default"
 APP_TITLE = "Zotero PDF Chat"
-APP_DESCRIPTION = "Chat with your Zotero PDF library using OpenAI's models" 
+APP_DESCRIPTION = "Chat with your Zotero PDF library using OpenAI's o3-mini reasoning model" 

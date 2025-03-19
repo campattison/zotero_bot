@@ -4,7 +4,7 @@ from openai import OpenAI
 import re
 from dataclasses import dataclass
 
-from config import OPENAI_API_KEY, CHAT_MODEL
+from config import OPENAI_API_KEY, CHAT_MODEL, REASONING_EFFORT
 from retriever import Retriever, SearchResult
 
 logger = logging.getLogger(__name__)
@@ -28,15 +28,18 @@ class ChatHandler:
         self.client = OpenAI(api_key=OPENAI_API_KEY)
         self.retriever = retriever
         self.model = CHAT_MODEL
+        self.reasoning_effort = REASONING_EFFORT
         self.chat_history = []
         self.max_tokens = 8192
+        self.in_clarification_stage = False
+        self.original_query = None
     
     def _get_completion_kwargs(self) -> Dict[str, Any]:
         """Get model completion arguments."""
         return {
             "model": self.model,
-            "temperature": 0,
-            "max_tokens": self.max_tokens
+            "reasoning_effort": self.reasoning_effort,
+            "max_completion_tokens": self.max_tokens
         }
         
     def _break_into_subquestions(self, query: str) -> List[str]:
@@ -64,20 +67,22 @@ class ChatHandler:
             {"role": "system", "content": """You are an expert academic researcher analyzing scholarly materials. Your analysis should:
 
 1. Be detailed, precise, and based strictly on the provided sources
-2. Extract specific arguments, theories, and frameworks mentioned in the sources
-3. Use proper academic citation when referencing specific points [Use format: Source X]
-4. Connect related ideas across different sources
-5. Identify gaps, contradictions, or limitations in the available information
-6. Avoid making claims not supported by the provided sources
-7. Prioritize specificity and depth over generalization
+2. Organize your analysis with relevant section headers that reflect key themes (use ## for headers)
+3. Extract specific arguments, theories, and frameworks discussed in the scholarly literature
+4. Use **bold** for key concepts and *italics* for emphasis where appropriate (but sparingly)
+5. Use proper academic citation when referencing specific points using the format [Author Year]
+6. Identify connections and tensions between different scholarly perspectives
+7. Acknowledge limitations in the available literature when appropriate
 
-Remember: academic rigor requires specificity and proper attribution."""},
+Section headers should be meaningful and reflect the content they introduce rather than generic structural labels. Aim for 2-4 headers that organize the content by topic for better readability.
+
+Remember: scholarly rigor requires specificity, proper attribution, and well-organized presentation."""},
             {"role": "user", "content": f"""Question: {question}
 
 Available Information:
 {context}
 
-Provide a detailed academic analysis of the information available on this question. Be specific about what each source contributes to our understanding, and identify any limitations in the available information."""}
+Provide a detailed scholarly analysis of the information available on this question. Organize your response with appropriate section headers to group related concepts. Discuss how different sources contribute to our understanding of the topic, and identify any significant limitations or gaps in the literature."""}
         ]
         
         response = self.client.chat.completions.create(
@@ -138,32 +143,27 @@ Provide a detailed academic analysis of the information available on this questi
             citation_details += f". Type: {item_type}\n"
         
         messages = [
-            {"role": "system", "content": """You are an expert academic researcher synthesizing research findings. Your output MUST follow this exact structure:
+            {"role": "system", "content": """You are an expert academic researcher synthesizing scholarly findings. Your output must maintain high standards of academic rigor while being well-organized and readable. Follow these guidelines:
 
-1. Start with a concise introduction to the topic
-2. Present detailed analysis with in-text citations using the format [Ref: X]
-3. For each major point, cite specific sources that support it
-4. Clearly state when different sources provide contradictory information
-5. End with a conclusion summarizing the main findings
-6. ALWAYS include a "References" section at the end with numbered citations
-7. Format each reference properly using academic citation style
+1. Organize your analysis with meaningful section headers that reflect the content's themes and topics
+2. Use headers to logically group related concepts and findings (e.g., "## Current Frameworks in AI Alignment" or "## Technical Approaches and Methodologies")
+3. Use limited formatting like **bold** for key terms and *italics* for emphasis where appropriate
+4. Incorporate in-text citations using the format [Author Year] consistently
+5. When discussing key concepts, cite specific sources that contribute to the understanding
+6. Present contrasting views when sources provide differing perspectives
+7. Include a "## References" section at the end with properly formatted citations
 
-The References section is MANDATORY. Never skip it. Format each reference using detailed bibliographic information.
-Your analysis should be detailed, nuanced, and focused on the specific question asked."""},
-            {"role": "user", "content": f"""Original Question: {original_query}
+Your headers should reflect the natural structure of the content rather than rigid academic sections. Use headers throughout your analysis to enhance readability while maintaining scholarly coherence. Make your headers descriptive of the specific content they introduce rather than generic structural labels.
+
+Your analysis should be detailed, evidence-based, and focused specifically on addressing the research question."""},
+            {"role": "user", "content": f"""Research Question: {original_query}
 
 Reasoning Steps:{steps_text}
 
 Available Citations:
 {citation_details}
 
-Write a comprehensive academic response that follows the required structure:
-1. Introduction
-2. Detailed analysis with in-text citations [Ref: X]
-3. Conclusion
-4. References section (MANDATORY)
-
-Make your response as detailed and informative as possible while maintaining academic rigor."""}
+Synthesize a comprehensive scholarly analysis that addresses this research question with academic rigor and proper citations. Use appropriate section headers to organize the content by topic, and limited formatting (bold/italic) to improve readability."""}
         ]
         
         response = self.client.chat.completions.create(
@@ -174,8 +174,8 @@ Make your response as detailed and informative as possible while maintaining aca
         response_text = response.choices[0].message.content
         
         # Check if References section exists, if not, add it ourselves
-        if "References" not in response_text and "REFERENCES" not in response_text:
-            references_section = "\n\nReferences:\n"
+        if "## References" not in response_text and "## REFERENCES" not in response_text:
+            references_section = "\n\n## References\n"
             for i, citation in enumerate(all_citations):
                 metadata = citation.metadata
                 
@@ -223,6 +223,37 @@ Make your response as detailed and informative as possible while maintaining aca
         
         return response_text
     
+    def _generate_clarification_questions(self, message: str) -> str:
+        """
+        Generate clarifying questions for the user's initial query.
+        
+        Args:
+            message (str): User's initial message
+            
+        Returns:
+            str: Clarifying questions to ask the user
+        """
+        messages = [
+            {"role": "system", "content": """You are a professional researcher at a top-tier academic institution. Your role is to ask focused clarifying questions before providing a comprehensive analysis.
+
+Your goal is to gather precise information about the user's research objectives to provide the most relevant scholarly analysis.
+
+Based on their initial query, ask 2-3 specific questions that help clarify:
+1. The specific focus of their research question or scholarly interest
+2. Relevant theoretical frameworks, key authors, methodological approaches, or time periods they wish to examine
+3. The scope and depth of analysis they require (e.g., comprehensive literature review, critical analysis of competing perspectives, etc.)
+
+Maintain a professional scholarly tone. Briefly acknowledge their research area, then pose your questions concisely and precisely."""},
+            {"role": "user", "content": f"I'm conducting research on the following topic or question: {message}"}
+        ]
+        
+        response = self.client.chat.completions.create(
+            messages=messages,
+            **self._get_completion_kwargs()
+        )
+        
+        return response.choices[0].message.content
+    
     def chat(self, message: str, history: List[Tuple[str, str]]) -> Tuple[List[Tuple[str, str]], str]:
         """
         Process a chat message using multi-step reasoning.
@@ -238,6 +269,58 @@ Make your response as detailed and informative as possible while maintaining aca
             # Create a clean copy of history to avoid modifying the original
             history_copy = list(history)
             
+            # Check if this is the first message in a conversation
+            if len(history_copy) == 0:
+                # This is the first message, enter clarification stage
+                self.in_clarification_stage = True
+                self.original_query = message
+                
+                # Generate clarifying questions
+                response = self._generate_clarification_questions(message)
+                
+                # Update history copy
+                history_copy.append((message, response))
+                
+                return history_copy, response
+            elif self.in_clarification_stage:
+                # This is the response to our clarification questions
+                # Combine the original query with the clarification info, but keep it hidden from the user
+                combined_query = f"""INITIAL RESEARCH QUERY: {self.original_query}
+
+CLARIFICATIONS PROVIDED BY USER: {message}
+
+Please provide a comprehensive scholarly analysis that addresses both the original query and incorporates the clarifications. Focus on academic rigor, proper citations, and providing nuanced analysis. Use appropriate section headers (## format) to organize content by topic rather than by document structure. Use limited formatting (**bold** for key terms, *italics* for emphasis) to enhance readability. Aim for meaningful section headers that reflect the specific themes and topics discussed."""
+                
+                # Exit clarification stage
+                self.in_clarification_stage = False
+                
+                # Process the combined query internally, but return only the user's clarification message
+                # to be displayed in the chat interface
+                history_copy.append((message, None))  # Add user message but no response yet
+                
+                # Process the combined query
+                internal_history = list(history_copy[:-1])  # Exclude the last message we just added
+                _, response = self._process_query(combined_query, internal_history)
+                
+                # Update history with just the user's visible message and the response
+                history_copy[-1] = (message, response)
+                
+                return history_copy, ""
+            
+            # Regular query processing for non-first messages
+            return self._process_query(message, history_copy)
+            
+        except Exception as e:
+            logger.error(f"Error in chat: {e}")
+            error_response = "I apologize, but I encountered an error while processing your question. Please try rephrasing or ask another question."
+            # Create a clean copy of history to avoid modifying the original
+            history_copy = list(history)
+            history_copy.append((message, error_response))
+            return history_copy, error_response
+
+    def _process_query(self, message: str, history_copy: List[Tuple[str, str]]) -> Tuple[List[Tuple[str, str]], str]:
+        """Process a query and generate a response."""
+        try:
             # First, determine if this is a simple query or needs decomposition
             is_complex_query = self._is_complex_query(message)
             
@@ -289,8 +372,7 @@ Make your response as detailed and informative as possible while maintaining aca
         except Exception as e:
             logger.error(f"Error in chat: {e}")
             error_response = "I apologize, but I encountered an error while processing your question. Please try rephrasing or ask another question."
-            # Create a clean copy of history to avoid modifying the original
-            history_copy = list(history)
+            # Add error response to history
             history_copy.append((message, error_response))
             return history_copy, error_response
 
@@ -300,4 +382,6 @@ Make your response as detailed and informative as possible while maintaining aca
 
     def reset_chat(self):
         """Reset the chat history."""
-        self.chat_history = [] 
+        self.chat_history = []
+        self.in_clarification_stage = False
+        self.original_query = None 
