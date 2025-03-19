@@ -77,10 +77,12 @@ The program will be available at http://localhost:7860 in your web browser.
 
 ## Example Questions
 
-- "What does [author] say about [topic]?"
-- "Summarize the main findings in my papers about [topic]"
-- "Compare different views on [topic] across my papers"
-- "What methods are used to study [topic] in my library?"
+- "What are the major approaches to value alignment in the most recent technical safety papers in my library?"
+- "Synthesize the key arguments for and against digital minds having moral status across my collection"
+- "Compare formal verification methods applied to AI systems in papers published in the last two years"
+- "What theoretical frameworks are emerging to address the interpretability problem in deep learning models?"
+- "Trace the evolution of arguments about AI governance structures in my papers from 2020-2023"
+- "Identify the methodological approaches used to evaluate safety benchmarks across my technical papers"
 
 ## Common Issues
 
